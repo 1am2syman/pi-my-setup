@@ -39,6 +39,8 @@ It does not copy:
 - local file paths
 - machine-specific config
 
+Packaged skills are restored when they come from a saved npm/git Pi package. Standalone local skill folders are detected during `save` and reported as a warning, but they are not included in the setup code.
+
 If a skill or extension is only present as a local file on one machine, package it as an npm/git Pi package before expecting `pi-my-setup` to restore it elsewhere.
 
 ## Optional global install

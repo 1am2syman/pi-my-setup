@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -19,6 +19,7 @@ const ANSI = {
   cyan: "\x1b[36m",
   green: "\x1b[32m",
   red: "\x1b[31m",
+  yellow: "\x1b[33m",
 };
 
 const DEFAULT_DESCRIPTIONS = new Map([
@@ -134,12 +135,13 @@ Options:
 }
 
 async function saveSetupCode() {
-  const { settingsPath, sources } = await readPiSettingsPackageSources();
+  const { settingsPath, sources, standaloneSkillSummary } = await readPiSettingsPackageSources();
   if (sources.length === 0) {
     throw new Error(`No shareable Pi package sources found in ${settingsPath}.`);
   }
 
   console.log(`${PACKAGE_RUN_COMMAND} restore ${encodeSetupCode(sources)}`);
+  printStandaloneSkillWarning(standaloneSkillSummary);
 }
 
 function printDecodedSetupCode(setupCode) {
@@ -276,15 +278,19 @@ async function installPackages(packages, options) {
   const verb = options.dryRun ? "Previewing" : "Installing";
   console.log(`${style("◆", ANSI.cyan)} ${verb} ${selected.length} package${selected.length === 1 ? "" : "s"}`);
 
-  for (const pkg of selected) {
+  for (let index = 0; index < selected.length; index++) {
+    const pkg = selected[index];
     const commandText = `pi install ${pkg.source}`;
     if (options.dryRun) {
       console.log(`${style("$", ANSI.dim)} ${commandText}`);
       continue;
     }
 
-    console.log(`\n${style("→", ANSI.cyan)} ${commandText}`);
-    await runCommand("pi", ["install", pkg.source]);
+    await runCommandQuiet("pi", ["install", pkg.source], {
+      label: `Installing ${pkg.source}`,
+      index: index + 1,
+      total: selected.length,
+    });
   }
 
   console.log(`${style("✓", ANSI.green)} ${options.dryRun ? "Dry run complete." : "Restore complete."}`);
@@ -300,6 +306,7 @@ async function readPiSettingsPackageSources() {
   return {
     settingsPath,
     sources: extractSupportedPackageSources(settings.packages ?? []),
+    standaloneSkillSummary: await getStandaloneSkillSummary(settings),
   };
 }
 
@@ -312,6 +319,53 @@ function extractSupportedPackageSources(entries) {
     }
   }
   return normalizeSetupPackageSources(sources);
+}
+
+async function getStandaloneSkillSummary(settings) {
+  const globalPiSkills = path.join(os.homedir(), ".pi", "agent", "skills");
+  const globalAgentSkills = path.join(os.homedir(), ".agents", "skills");
+  return {
+    settingsSkillLocations: Array.isArray(settings.skills) ? settings.skills.length : 0,
+    piSkills: await countSkillDirectories(globalPiSkills),
+    agentSkills: await countSkillDirectories(globalAgentSkills),
+  };
+}
+
+async function countSkillDirectories(root) {
+  if (!existsSync(root)) {
+    return 0;
+  }
+
+  let count = 0;
+  const rootEntries = await readdir(root, { withFileTypes: true });
+  for (const entry of rootEntries) {
+    if (entry.isFile() && entry.name.endsWith(".md") && entry.name !== "SKILL.md") {
+      count += 1;
+    }
+  }
+
+  const entries = await readdir(root, { recursive: true, withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isFile() && entry.name === "SKILL.md") {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function printStandaloneSkillWarning(summary) {
+  const localSkillCount = summary.piSkills + summary.agentSkills;
+  const standaloneCount = localSkillCount + summary.settingsSkillLocations;
+  if (standaloneCount === 0) {
+    return;
+  }
+
+  console.error(
+    `${style("!", ANSI.yellow)} Note: ${standaloneCount} standalone skill source${standaloneCount === 1 ? "" : "s"} detected and not included in the restore code.`,
+  );
+  console.error(
+    style("  pi-my-setup restores skills only when they come from npm/git Pi packages. Local skill folders and settings.skills paths are not portable.", ANSI.dim),
+  );
 }
 
 function sourceIdentity(source) {
@@ -428,22 +482,80 @@ function style(text, code) {
   return process.stdout.isTTY ? `${code}${text}${ANSI.reset}` : text;
 }
 
-function runCommand(command, args) {
+function runCommandQuiet(command, args, progress) {
   const prepared = prepareCommand(command, args);
+  const commandText = `${command} ${args.join(" ")}`;
+  const output = [];
+  const progressLine = startProgress(progress);
+
   return new Promise((resolve, reject) => {
     const child = spawn(prepared.command, prepared.args, {
-      stdio: "inherit",
+      stdio: ["ignore", "pipe", "pipe"],
     });
 
-    child.on("error", reject);
+    child.stdout.on("data", (chunk) => appendOutput(output, chunk));
+    child.stderr.on("data", (chunk) => appendOutput(output, chunk));
+
+    child.on("error", (error) => {
+      progressLine.stop(false);
+      reject(error);
+    });
+
     child.on("close", (code) => {
       if (code === 0) {
+        progressLine.stop(true);
         resolve();
         return;
       }
-      reject(new Error(`${command} ${args.join(" ")} failed with exit code ${code}`));
+
+      progressLine.stop(false);
+      const details = output.join("").trim();
+      if (details) {
+        console.error(details);
+      }
+      reject(new Error(`${commandText} failed with exit code ${code}`));
     });
   });
+}
+
+function appendOutput(output, chunk) {
+  output.push(chunk.toString());
+  const joined = output.join("");
+  if (joined.length > 20_000) {
+    output.splice(0, output.length, joined.slice(-20_000));
+  }
+}
+
+function startProgress({ label, index, total }) {
+  if (!process.stdout.isTTY) {
+    console.log(`${index}/${total} ${label}...`);
+    return { stop: () => {} };
+  }
+
+  const frames = ["▰▱▱▱▱▱▱▱", "▰▰▱▱▱▱▱▱", "▰▰▰▱▱▱▱▱", "▰▰▰▰▱▱▱▱", "▰▰▰▰▰▱▱▱", "▰▰▰▰▰▰▱▱", "▰▰▰▰▰▰▰▱", "▰▰▰▰▰▰▰▰"];
+  let frame = 0;
+
+  const render = () => {
+    const bar = style(frames[frame % frames.length], ANSI.cyan);
+    process.stdout.write(`\r${style("→", ANSI.cyan)} ${index}/${total} ${label} ${bar}`);
+    frame += 1;
+  };
+
+  render();
+  const timer = setInterval(render, 120);
+
+  return {
+    stop(success) {
+      clearInterval(timer);
+      clearProgressLine();
+      const icon = success ? style("✓", ANSI.green) : style("✕", ANSI.red);
+      console.log(`${icon} ${index}/${total} ${label}`);
+    },
+  };
+}
+
+function clearProgressLine() {
+  process.stdout.write("\r\x1b[2K");
 }
 
 function prepareCommand(command, args) {

@@ -11,6 +11,15 @@ const SETUP_CODE_VERSION = 1;
 const SETUP_CODE_PREFIX = `pisetup:v${SETUP_CODE_VERSION}:`;
 const SUPPORTED_URL_PROTOCOL = /^(https?|ssh|git):\/\//i;
 
+const ANSI = {
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dim: "\x1b[2m",
+  cyan: "\x1b[36m",
+  green: "\x1b[32m",
+  red: "\x1b[31m",
+};
+
 const DEFAULT_DESCRIPTIONS = new Map([
   ["npm:pi-mcp-adapter", "MCP adapter for connecting Pi to MCP servers."],
   ["npm:pi-init", "Pi initialization helpers, including AGENTS.md generation."],
@@ -144,8 +153,11 @@ async function restoreSetupCode(setupCode, options) {
     selected: true,
   }));
 
-  printSetupPackageSources(sources);
-  console.log("");
+  if (options.yes || !process.stdin.isTTY || !process.stdout.isTTY) {
+    printSetupPackageSources(sources);
+    console.log("");
+  }
+
   await installPackages(packages, options);
 }
 
@@ -246,7 +258,7 @@ async function installPackages(packages, options) {
   const result = options.yes ? { cancelled: false, packages } : await selectPackages(packages);
 
   if (result.cancelled) {
-    console.log("Install cancelled.");
+    console.log(`${style("✕", ANSI.red)} Restore cancelled.`);
     return;
   }
 
@@ -256,18 +268,21 @@ async function installPackages(packages, options) {
     return;
   }
 
+  const verb = options.dryRun ? "Previewing" : "Installing";
+  console.log(`${style("◆", ANSI.cyan)} ${verb} ${selected.length} package${selected.length === 1 ? "" : "s"}`);
+
   for (const pkg of selected) {
     const commandText = `pi install ${pkg.source}`;
     if (options.dryRun) {
-      console.log(commandText);
+      console.log(`${style("$", ANSI.dim)} ${commandText}`);
       continue;
     }
 
-    console.log(`\n${commandText}`);
+    console.log(`\n${style("→", ANSI.cyan)} ${commandText}`);
     await runCommand("pi", ["install", pkg.source]);
   }
 
-  console.log(options.dryRun ? "Dry run complete." : "Install complete.");
+  console.log(`${style("✓", ANSI.green)} ${options.dryRun ? "Dry run complete." : "Restore complete."}`);
 }
 
 async function readPiSettingsPackageSources() {
@@ -339,7 +354,7 @@ async function selectPackages(inputPackages) {
     const cleanup = () => {
       process.stdin.off("keypress", onKeypress);
       process.stdin.setRawMode(false);
-      process.stdout.write("\x1b[?25h\x1b[2J\x1b[H");
+      process.stdout.write("\x1b[?25h\n");
     };
 
     const finish = (cancelled) => {
@@ -350,17 +365,25 @@ async function selectPackages(inputPackages) {
     };
 
     const render = () => {
+      const selectedCount = packages.filter((pkg) => pkg.selected).length;
       process.stdout.write("\x1b[2J\x1b[H");
-      console.log("Pi package restore");
-      console.log("Use ↑/↓ to move, Space to toggle, Enter to install, q to cancel.");
+      console.log(`${style("◆", ANSI.cyan)} ${style("pi-my-setup", ANSI.bold)}`);
+      console.log(style(`Restore ${packages.length} shareable Pi package${packages.length === 1 ? "" : "s"}`, ANSI.dim));
+      console.log("");
+      console.log(`${style("Select packages to install", ANSI.bold)} ${style(`(${selectedCount}/${packages.length} selected)`, ANSI.dim)}`);
       console.log("");
 
       packages.forEach((pkg, index) => {
-        const pointer = index === cursor ? ">" : " ";
-        const checked = pkg.selected ? "[x]" : "[ ]";
-        const description = pkg.description ? ` - ${pkg.description}` : "";
-        console.log(`${pointer} ${checked} ${pkg.source}${description}`);
+        const active = index === cursor;
+        const pointer = active ? style("❯", ANSI.cyan) : " ";
+        const checked = pkg.selected ? style("●", ANSI.green) : style("○", ANSI.dim);
+        const source = active ? style(pkg.source, ANSI.bold) : pkg.source;
+        const description = pkg.description ? ` ${style(`— ${pkg.description}`, ANSI.dim)}` : "";
+        console.log(`${pointer} ${checked} ${source}${description}`);
       });
+
+      console.log("");
+      console.log(style("Space toggle · A all · N none · Enter install · Esc/q cancel", ANSI.dim));
     };
 
     const onKeypress = (_str, key) => {
@@ -372,10 +395,18 @@ async function selectPackages(inputPackages) {
         cursor = Math.min(Math.max(0, packages.length - 1), cursor + 1);
       } else if (key.name === "space") {
         if (packages[cursor]) packages[cursor].selected = !packages[cursor].selected;
+      } else if (key.name === "a") {
+        packages.forEach((pkg) => {
+          pkg.selected = true;
+        });
+      } else if (key.name === "n") {
+        packages.forEach((pkg) => {
+          pkg.selected = false;
+        });
       } else if (key.name === "return") {
         finish(false);
         return;
-      } else if (key.name === "q" || (key.ctrl && key.name === "c")) {
+      } else if (key.name === "escape" || key.name === "q" || (key.ctrl && key.name === "c")) {
         finish(true);
         return;
       }
@@ -388,11 +419,14 @@ async function selectPackages(inputPackages) {
   });
 }
 
+function style(text, code) {
+  return process.stdout.isTTY ? `${code}${text}${ANSI.reset}` : text;
+}
+
 function runCommand(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(resolveCommand(command), args, {
       stdio: "inherit",
-      shell: process.platform === "win32",
     });
 
     child.on("error", reject);
@@ -404,4 +438,11 @@ function runCommand(command, args) {
       reject(new Error(`${command} ${args.join(" ")} failed with exit code ${code}`));
     });
   });
+}
+
+function resolveCommand(command) {
+  if (process.platform === "win32" && !/\.(cmd|bat|exe)$/i.test(command)) {
+    return `${command}.cmd`;
+  }
+  return command;
 }

@@ -1,6 +1,6 @@
 {
   "name": "pi-my-setup",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Save and restore Pi package setups with one command.",
   "type": "module",
   "bin": {

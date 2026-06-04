@@ -10,6 +10,7 @@ const PACKAGE_RUN_COMMAND = "npx pi-my-setup";
 const SETUP_CODE_VERSION = 1;
 const SETUP_CODE_PREFIX = `pisetup:v${SETUP_CODE_VERSION}:`;
 const SUPPORTED_URL_PROTOCOL = /^(https?|ssh|git):\/\//i;
+const UNSAFE_WINDOWS_SOURCE_CHAR = /["%\r\n]/;
 
 const ANSI = {
   reset: "\x1b[0m",
@@ -244,6 +245,10 @@ function normalizeSetupPackageSources(sources) {
       );
     }
 
+    if (UNSAFE_WINDOWS_SOURCE_CHAR.test(source)) {
+      throw new Error(`Setup code packages[${index}] contains unsupported shell characters: ${source}`);
+    }
+
     byIdentity.set(sourceIdentity(source), source);
   });
 
@@ -424,8 +429,9 @@ function style(text, code) {
 }
 
 function runCommand(command, args) {
+  const prepared = prepareCommand(command, args);
   return new Promise((resolve, reject) => {
-    const child = spawn(resolveCommand(command), args, {
+    const child = spawn(prepared.command, prepared.args, {
       stdio: "inherit",
     });
 
@@ -440,9 +446,13 @@ function runCommand(command, args) {
   });
 }
 
-function resolveCommand(command) {
-  if (process.platform === "win32" && !/\.(cmd|bat|exe)$/i.test(command)) {
-    return `${command}.cmd`;
+function prepareCommand(command, args) {
+  if (process.platform === "win32") {
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", command, ...args],
+    };
   }
-  return command;
+
+  return { command, args };
 }

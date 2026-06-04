@@ -1,0 +1,31 @@
+{
+  "name": "pi-my-setup",
+  "version": "0.3.0",
+  "description": "Save and restore Pi package setups with one command.",
+  "type": "module",
+  "bin": {
+    "pi-my-setup": "bin/pi-my-setup.js"
+  },
+  "scripts": {
+    "check": "node --check bin/pi-my-setup.js && node --check src/cli.js",
+    "prepublishOnly": "npm run check"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md"
+  ],
+  "keywords": [
+    "pi",
+    "pi-package",
+    "setup",
+    "restore"
+  ],
+  "license": "UNLICENSED",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

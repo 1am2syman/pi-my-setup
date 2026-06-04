@@ -1,0 +1,11 @@
+node_modules/
+npm-debug.log*
+.DS_Store
+
+# Build/package output
+dist/
+*.tgz
+
+# Local Pi/user state
+.pi/
+.agents/

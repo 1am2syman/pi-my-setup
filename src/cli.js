@@ -52,7 +52,7 @@ export async function runCli(argv) {
   }
 
   if (options.command === "save" || options.command === "export") {
-    await saveSetupCode();
+    await saveSetupCode(options);
     return;
   }
 
@@ -135,13 +135,13 @@ function printHelp() {
   console.log(`pi-my-setup
 
 Usage:
-  npx pi-my-setup                  Print one restore command from this machine's Pi settings and skills
-  npx pi-my-setup save             Print one restore command from this machine's Pi settings and skills
+  npx pi-my-setup                  Select packages and skills, then print one restore command
+  npx pi-my-setup save             Select packages and skills, then print one restore command
   npx pi-my-setup restore <code>   Decode a setup code, then install selected packages and skills
   npx pi-my-setup decode <code>    Print packages and skills inside a setup code without installing
 
 Options:
-  --yes, -y                        Skip checkbox UI and install every decoded item
+  --yes, -y                        Skip checkbox UI and use every decoded/discovered item
   --dry-run                        Print restore commands without running them
   --version, -v                    Print pi-my-setup version
   --help, -h                       Show this help
@@ -161,13 +161,31 @@ function readPackageVersion() {
   }
 }
 
-async function saveSetupCode() {
+async function saveSetupCode(options) {
   const { settingsPath, setup, skillSummary } = await readShareableSetup();
   if (setup.packages.length === 0 && setup.skills.length === 0) {
     throw new Error(`No shareable Pi package sources or skill sources found in ${settingsPath}.`);
   }
 
-  const restoreCommand = `${PACKAGE_RUN_COMMAND} restore ${encodeSetupCode(setup)}`;
+  const items = createRestoreItems(setup);
+  const result = options.yes ? { cancelled: false, items } : await selectItems(items, {
+    summaryVerb: "Save",
+    prompt: "Select items to save",
+    enterAction: "save",
+  });
+
+  if (result.cancelled) {
+    console.log(`${style("✕", ANSI.red)} Save cancelled.`);
+    return;
+  }
+
+  const selectedSetup = createSetupFromSelectedItems(result.items);
+  if (selectedSetup.packages.length === 0 && selectedSetup.skills.length === 0) {
+    console.log("No items selected.");
+    return;
+  }
+
+  const restoreCommand = `${PACKAGE_RUN_COMMAND} restore ${encodeSetupCode(selectedSetup)}`;
   console.log(restoreCommand);
   await copyRestoreCommandToClipboard(restoreCommand);
   printSkillMetadataWarning(skillSummary);
@@ -288,6 +306,16 @@ function createRestoreItems(setup) {
       selected: true,
     })),
   ];
+}
+
+function createSetupFromSelectedItems(items) {
+  const selected = items.filter((item) => item.selected);
+  return {
+    packages: selected.filter((item) => item.kind === "package").map((item) => item.source),
+    skills: selected
+      .filter((item) => item.kind === "skill")
+      .map((item) => ({ source: item.source, skill: item.skill })),
+  };
 }
 
 function printDecodedSetup(setup) {
@@ -749,8 +777,11 @@ function stripGitRef(source) {
   return source;
 }
 
-async function selectItems(inputItems) {
+async function selectItems(inputItems, labels = {}) {
   const items = inputItems.map((item) => ({ ...item }));
+  const summaryVerb = labels.summaryVerb || "Restore";
+  const prompt = labels.prompt || "Select items to install";
+  const enterAction = labels.enterAction || "install";
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     return { cancelled: false, items };
   }
@@ -781,9 +812,9 @@ async function selectItems(inputItems) {
       const selectedCount = items.filter((item) => item.selected).length;
       process.stdout.write("\x1b[2J\x1b[H");
       console.log(`${style("◆", ANSI.cyan)} ${style("pi-my-setup", ANSI.bold)}`);
-      console.log(style(`Restore ${items.length} shareable item${items.length === 1 ? "" : "s"}`, ANSI.dim));
+      console.log(style(`${summaryVerb} ${items.length} shareable item${items.length === 1 ? "" : "s"}`, ANSI.dim));
       console.log("");
-      console.log(`${style("Select items to install", ANSI.bold)} ${style(`(${selectedCount}/${items.length} selected)`, ANSI.dim)}`);
+      console.log(`${style(prompt, ANSI.bold)} ${style(`(${selectedCount}/${items.length} selected)`, ANSI.dim)}`);
       console.log("");
 
       let previousKind = "";
@@ -803,7 +834,7 @@ async function selectItems(inputItems) {
       });
 
       console.log("");
-      console.log(style("Space toggle · A all · N none · Enter install · Esc/q cancel", ANSI.dim));
+      console.log(style(`Space toggle · A all · N none · Enter ${enterAction} · Esc/q cancel`, ANSI.dim));
     };
 
     const onKeypress = (_str, key) => {

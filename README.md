@@ -13,8 +13,10 @@ npx --yes pi-my-setup@latest save
 That command:
 
 1. Reads your shareable Pi packages and portable skills.
-2. Prints one restore command.
-3. Copies that restore command to your clipboard when clipboard access is available.
+2. Shows a checkbox list with everything selected by default.
+3. Lets you uncheck anything you do not want in the restore command.
+4. Prints one restore command for only the selected items.
+5. Copies that restore command to your clipboard when clipboard access is available.
 
 On the new machine, paste the copied command and run it.
 
@@ -31,6 +33,8 @@ Use `npx` if you only need the tool occasionally:
 ```bash
 npx --yes pi-my-setup@latest save
 ```
+
+In that command, the first `--yes` belongs to `npx`; it only skips the npm download prompt. You will still get the `pi-my-setup` checkbox picker.
 
 Use a global install if you want a permanent `pi-my-setup` command:
 
@@ -105,7 +109,7 @@ That means at least one skill exists locally but has no portable install source.
 ## Commands
 
 ```bash
-npx --yes pi-my-setup@latest save          # print and copy one restore command
+npx --yes pi-my-setup@latest save          # choose what to save, then print and copy one restore command
 npx --yes pi-my-setup@latest restore CODE  # install packages and skills from a setup code
 npx --yes pi-my-setup@latest decode CODE   # show what is inside a setup code
 npx --yes pi-my-setup@latest --version     # show latest package version
@@ -124,11 +128,33 @@ pi-my-setup -v
 Options:
 
 ```bash
---yes, -y      Skip checkbox UI during restore and install every decoded item
+--yes, -y      Skip checkbox UI and use every decoded/discovered item
 --dry-run      Print restore commands without running them
 --version, -v  Print pi-my-setup version
 --help, -h     Show help
 ```
+
+## Save flow
+
+When you run `pi-my-setup save`, `pi-my-setup`:
+
+1. Finds portable packages and skills.
+2. Shows the same checkbox UI used by restore.
+3. Starts with every item checked.
+4. Lets you press Space to exclude selected items.
+5. Generates the restore command from only the checked items.
+6. Copies the generated command to the clipboard when possible.
+
+Use `pi-my-setup`'s `--yes` flag after `save` to skip the checkbox picker and save everything:
+
+```bash
+npx --yes pi-my-setup@latest save --yes
+```
+
+The two `--yes` flags are different:
+
+- first `--yes`: tells `npx` not to ask before downloading the package
+- second `--yes`: tells `pi-my-setup` to select every package and skill
 
 ## Restore flow
 

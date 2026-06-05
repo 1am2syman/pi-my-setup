@@ -82,6 +82,8 @@ npx --yes pi-my-setup@latest save
 - global skills with installer metadata in `~/.agents/.skill-lock.json`
 - git-backed skill repos under `~/.pi/agent/skills` that have an `origin` remote
 
+It only saves **global skills**. It does **not** save project-local skills from an individual repository or workspace.
+
 ## What does not get saved
 
 It never saves machine-specific or secret data:
@@ -90,11 +92,14 @@ It never saves machine-specific or secret data:
 - auth tokens
 - npm credentials
 - Pi preferences/settings unrelated to package installation
-- local-only skills with no installer metadata
+- project-local skills from a repository/workspace
+- local-only global skills with no installer metadata
 - local file paths
 - machine-specific config
 
-If a skill is just a local folder, `pi-my-setup` cannot recreate it on another machine. Install that skill through the Skills CLI, put it in a git repo with an `origin` remote, or package it as a Pi package first.
+If a global skill is just a local folder, `pi-my-setup` cannot recreate it on another machine. Install that skill through the Skills CLI, put it in a git repo with an `origin` remote, or package it as a Pi package first.
+
+If a skill belongs to one project, keep it in that project repository. `pi-my-setup` is for moving your machine-level Pi setup, not for packaging project-local skill files.
 
 ## Skill warning explained
 

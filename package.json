@@ -1,6 +1,6 @@
 {
   "name": "pi-my-setup",
-  "version": "0.4.10",
+  "version": "0.4.11",
   "description": "Save and restore Pi package and skill setups with one command.",
   "type": "module",
   "bin": {

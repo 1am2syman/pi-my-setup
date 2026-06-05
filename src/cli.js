@@ -167,7 +167,7 @@ async function saveSetupCode(options) {
     throw new Error(`No shareable Pi package sources or skill sources found in ${settingsPath}.`);
   }
 
-  const items = createRestoreItems(setup);
+  const items = createSaveItems(setup, skillSummary.skippedSkills);
   const result = options.yes ? { cancelled: false, items } : await selectItems(items, {
     summaryVerb: "Save",
     prompt: "Select items to save",
@@ -180,8 +180,10 @@ async function saveSetupCode(options) {
   }
 
   const selectedSetup = createSetupFromSelectedItems(result.items);
+  const selectedSkippedSkills = result.items.filter((item) => item.selected && item.saveable === false);
   if (selectedSetup.packages.length === 0 && selectedSetup.skills.length === 0) {
-    console.log("No items selected.");
+    console.log("No portable items selected.");
+    printSkippedSkillSourceNotice(selectedSkippedSkills);
     return;
   }
 
@@ -189,7 +191,7 @@ async function saveSetupCode(options) {
   console.log(restoreCommand);
   printSavedSetupSummary(selectedSetup);
   await copyRestoreCommandToClipboard(restoreCommand);
-  printSkippedSkillSourceNotice(skillSummary);
+  printSkippedSkillSourceNotice(selectedSkippedSkills);
 }
 
 function printSavedSetupSummary(setup) {
@@ -304,6 +306,7 @@ function createRestoreItems(setup) {
       label: source,
       description: DEFAULT_DESCRIPTIONS.get(source) || "Pi package",
       selected: true,
+      saveable: true,
     })),
     ...setup.skills.map((skill) => ({
       kind: "skill",
@@ -312,12 +315,27 @@ function createRestoreItems(setup) {
       label: `${skill.source}@${skill.skill}`,
       description: "Agent skill",
       selected: true,
+      saveable: true,
+    })),
+  ];
+}
+
+function createSaveItems(setup, skippedSkills = []) {
+  return [
+    ...createRestoreItems(setup),
+    ...skippedSkills.map((skill) => ({
+      kind: "skill",
+      label: skill.name,
+      description: `Cannot save: ${skill.reason}`,
+      selected: true,
+      saveable: false,
+      skippedSkill: skill,
     })),
   ];
 }
 
 function createSetupFromSelectedItems(items) {
-  const selected = items.filter((item) => item.selected);
+  const selected = items.filter((item) => item.selected && item.saveable !== false);
   return {
     packages: selected.filter((item) => item.kind === "package").map((item) => item.source),
     skills: selected
@@ -582,20 +600,21 @@ async function readShareableSkills(settings) {
   const lockPath = path.join(os.homedir(), ".agents", ".skill-lock.json");
   const installedSkillNames = await getInstalledSkillNames(agentSkillsRoot);
   const piSkillResult = await readPiSkillRepoSources(piSkillsRoot);
-  const settingsSkillLocations = Array.isArray(settings.skills) ? settings.skills.length : 0;
+  const settingsSkillSkips = getSettingsSkillSkips(settings.skills);
 
   const skills = [...piSkillResult.skills];
-  let missingMetadataSkills = piSkillResult.missingMetadataSkills;
+  const skippedSkills = [...piSkillResult.skippedSkills, ...settingsSkillSkips];
 
   if (!existsSync(lockPath)) {
-    missingMetadataSkills += installedSkillNames.size;
+    for (const skillName of installedSkillNames) {
+      skippedSkills.push({ name: skillName, reason: "missing Skills CLI install metadata" });
+    }
     const normalizedSkills = normalizeSetupSkills(skills);
     return {
       skills: normalizedSkills,
       summary: {
         includedSkills: normalizedSkills.length,
-        missingMetadataSkills,
-        settingsSkillLocations,
+        skippedSkills,
       },
     };
   }
@@ -607,7 +626,7 @@ async function readShareableSkills(settings) {
     const metadata = lockSkills[skillName];
     const source = metadata ? getSkillInstallSource(metadata) : "";
     if (!source) {
-      missingMetadataSkills += 1;
+      skippedSkills.push({ name: skillName, reason: "missing Skills CLI install metadata" });
       continue;
     }
     skills.push({ source, skill: skillName });
@@ -618,10 +637,36 @@ async function readShareableSkills(settings) {
     skills: normalizedSkills,
     summary: {
       includedSkills: normalizedSkills.length,
-      missingMetadataSkills,
-      settingsSkillLocations,
+      skippedSkills,
     },
   };
+}
+
+function getSettingsSkillSkips(settingsSkills) {
+  if (!Array.isArray(settingsSkills)) {
+    return [];
+  }
+
+  return settingsSkills.map((entry, index) => ({
+    name: getSettingsSkillLabel(entry, index),
+    reason: "configured in Pi settings without portable installer metadata",
+  }));
+}
+
+function getSettingsSkillLabel(entry, index) {
+  if (typeof entry === "string" && entry.trim()) {
+    return entry.trim();
+  }
+
+  if (entry && typeof entry === "object") {
+    for (const key of ["name", "skill", "path", "location", "source"]) {
+      if (typeof entry[key] === "string" && entry[key].trim()) {
+        return entry[key].trim();
+      }
+    }
+  }
+
+  return `settings.skills[${index}]`;
 }
 
 function getSkillInstallSource(metadata) {
@@ -657,11 +702,11 @@ async function getInstalledSkillNames(root) {
 
 async function readPiSkillRepoSources(root) {
   if (!existsSync(root)) {
-    return { skills: [], missingMetadataSkills: 0 };
+    return { skills: [], skippedSkills: [] };
   }
 
   const skills = [];
-  let missingMetadataSkills = 0;
+  const skippedSkills = [];
   const entries = await readdir(root, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isDirectory()) {
@@ -671,9 +716,7 @@ async function readPiSkillRepoSources(root) {
     const skillRoot = path.join(root, entry.name);
     const repoSource = await readGitRepoSource(skillRoot);
     if (!repoSource) {
-      if (existsSync(path.join(skillRoot, "SKILL.md"))) {
-        missingMetadataSkills += 1;
-      }
+      skippedSkills.push(...(await readLocalPiSkillSkips(skillRoot, entry.name)));
       continue;
     }
 
@@ -695,7 +738,35 @@ async function readPiSkillRepoSources(root) {
     }
   }
 
-  return { skills, missingMetadataSkills };
+  return { skills, skippedSkills };
+}
+
+async function readLocalPiSkillSkips(skillRoot, fallbackName) {
+  const skippedSkills = [];
+  const rootSkillPath = path.join(skillRoot, "SKILL.md");
+  if (existsSync(rootSkillPath)) {
+    skippedSkills.push({
+      name: await readSkillName(rootSkillPath, fallbackName),
+      reason: "local Pi skill folder without a git origin remote",
+    });
+  }
+
+  const childEntries = await readdir(skillRoot, { withFileTypes: true });
+  for (const childEntry of childEntries) {
+    if (!childEntry.isDirectory()) {
+      continue;
+    }
+
+    const childSkillPath = path.join(skillRoot, childEntry.name, "SKILL.md");
+    if (existsSync(childSkillPath)) {
+      skippedSkills.push({
+        name: await readSkillName(childSkillPath, childEntry.name),
+        reason: "local Pi skill folder without a git origin remote",
+      });
+    }
+  }
+
+  return skippedSkills;
 }
 
 async function readGitRepoSource(repoRoot) {
@@ -740,19 +811,25 @@ async function readSkillName(skillPath, fallback) {
   return nameMatch ? nameMatch[1].trim() : fallback;
 }
 
-function printSkippedSkillSourceNotice(summary) {
-  const skippedCount = summary.missingMetadataSkills + summary.settingsSkillLocations;
-  if (skippedCount === 0) {
+function printSkippedSkillSourceNotice(selectedSkippedItems) {
+  const skippedSkills = selectedSkippedItems.map((item) => item.skippedSkill).filter(Boolean);
+  if (skippedSkills.length === 0) {
     return;
   }
 
   console.error("");
   console.error(
-    `${style("!", ANSI.yellow)} Heads up: ${skippedCount} skill${skippedCount === 1 ? "" : "s"} could not be added to the restore command because ${skippedCount === 1 ? "it has" : "they have"} no portable install source.`,
+    `${style("!", ANSI.yellow)} Heads up: ${skippedSkills.length} selected skill${skippedSkills.length === 1 ? "" : "s"} could not be added to the restore command because ${skippedSkills.length === 1 ? "it has" : "they have"} no portable install source:`,
   );
+  for (const skippedSkill of skippedSkills.slice(0, 10)) {
+    console.error(style(`  - ${skippedSkill.name} (${skippedSkill.reason})`, ANSI.dim));
+  }
+  if (skippedSkills.length > 10) {
+    console.error(style(`  - ...and ${skippedSkills.length - 10} more`, ANSI.dim));
+  }
   console.error(
     style(
-      "  This does not refer to items you unchecked. These skills were not selectable because pi-my-setup cannot reinstall them on another machine.",
+      "  Uncheck these rows if you do not want to see this notice.",
       ANSI.dim,
     ),
   );

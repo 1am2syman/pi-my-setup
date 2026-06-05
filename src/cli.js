@@ -788,6 +788,7 @@ async function selectItems(inputItems, labels = {}) {
 
   let cursor = 0;
   let finished = false;
+  let scrollRowOffset = 0;
 
   readline.emitKeypressEvents(process.stdin);
   process.stdin.setRawMode(true);
@@ -810,31 +811,38 @@ async function selectItems(inputItems, labels = {}) {
 
     const render = () => {
       const selectedCount = items.filter((item) => item.selected).length;
+      const rows = buildPickerRows(items);
+      const listHeight = getPickerListHeight();
+      const cursorRowIndex = Math.max(0, rows.findIndex((row) => row.itemIndex === cursor));
+
+      if (cursorRowIndex < scrollRowOffset) {
+        scrollRowOffset = cursorRowIndex;
+      } else if (cursorRowIndex >= scrollRowOffset + listHeight) {
+        scrollRowOffset = cursorRowIndex - listHeight + 1;
+      }
+
+      const visibleRows = rows.slice(scrollRowOffset, scrollRowOffset + listHeight);
+      const firstVisible = Math.min(rows.length, scrollRowOffset + 1);
+      const lastVisible = Math.min(rows.length, scrollRowOffset + visibleRows.length);
+
       process.stdout.write("\x1b[2J\x1b[H");
       console.log(`${style("◆", ANSI.cyan)} ${style("pi-my-setup", ANSI.bold)}`);
-      console.log(style(`${summaryVerb} ${items.length} shareable item${items.length === 1 ? "" : "s"}`, ANSI.dim));
+      console.log(
+        style(
+          `${summaryVerb} ${items.length} shareable item${items.length === 1 ? "" : "s"} · showing ${firstVisible}-${lastVisible} of ${rows.length}`,
+          ANSI.dim,
+        ),
+      );
       console.log("");
       console.log(`${style(prompt, ANSI.bold)} ${style(`(${selectedCount}/${items.length} selected)`, ANSI.dim)}`);
       console.log("");
 
-      let previousKind = "";
-      items.forEach((item, index) => {
-        if (item.kind !== previousKind) {
-          if (previousKind) console.log("");
-          console.log(style(item.kind === "skill" ? "Skills" : "Packages", ANSI.bold));
-          previousKind = item.kind;
-        }
-
-        const active = index === cursor;
-        const pointer = active ? style("❯", ANSI.cyan) : " ";
-        const checked = item.selected ? style("●", ANSI.green) : style("○", ANSI.dim);
-        const label = active ? style(item.label, ANSI.bold) : item.label;
-        const description = item.description ? ` ${style(`— ${item.description}`, ANSI.dim)}` : "";
-        console.log(`${pointer} ${checked} ${label}${description}`);
-      });
+      for (const row of visibleRows) {
+        console.log(formatPickerRow(row, cursor));
+      }
 
       console.log("");
-      console.log(style(`Space toggle · A all · N none · Enter ${enterAction} · Esc/q cancel`, ANSI.dim));
+      console.log(style(`↑/↓ move · Space toggle · A all · N none · Enter ${enterAction} · Esc/q cancel`, ANSI.dim));
     };
 
     const onKeypress = (_str, key) => {
@@ -868,6 +876,49 @@ async function selectItems(inputItems, labels = {}) {
     process.stdin.on("keypress", onKeypress);
     render();
   });
+}
+
+function buildPickerRows(items) {
+  const rows = [];
+  let previousKind = "";
+  items.forEach((item, index) => {
+    if (item.kind !== previousKind) {
+      rows.push({ type: "heading", label: item.kind === "skill" ? "Skills" : "Packages" });
+      previousKind = item.kind;
+    }
+    rows.push({ type: "item", item, itemIndex: index });
+  });
+  return rows;
+}
+
+function getPickerListHeight() {
+  const fixedRows = 8;
+  const terminalRows = process.stdout.rows || 24;
+  return Math.max(1, terminalRows - fixedRows);
+}
+
+function formatPickerRow(row, cursor) {
+  const columns = process.stdout.columns || 100;
+  if (row.type === "heading") {
+    return style(truncateText(row.label, columns), ANSI.bold);
+  }
+
+  const active = row.itemIndex === cursor;
+  const pointer = active ? style("❯", ANSI.cyan) : " ";
+  const checked = row.item.selected ? style("●", ANSI.green) : style("○", ANSI.dim);
+  const content = truncateText(`${row.item.label}${row.item.description ? ` — ${row.item.description}` : ""}`, Math.max(1, columns - 4));
+  const label = active ? style(content, ANSI.bold) : content;
+  return `${pointer} ${checked} ${label}`;
+}
+
+function truncateText(text, width) {
+  if (text.length <= width) {
+    return text;
+  }
+  if (width <= 1) {
+    return "";
+  }
+  return `${text.slice(0, width - 1)}…`;
 }
 
 function style(text, code) {

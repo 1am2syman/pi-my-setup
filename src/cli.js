@@ -187,8 +187,16 @@ async function saveSetupCode(options) {
 
   const restoreCommand = `${PACKAGE_RUN_COMMAND} restore ${encodeSetupCode(selectedSetup)}`;
   console.log(restoreCommand);
+  printSavedSetupSummary(selectedSetup);
   await copyRestoreCommandToClipboard(restoreCommand);
-  printSkillMetadataWarning(skillSummary);
+  printSkippedSkillSourceNotice(skillSummary);
+}
+
+function printSavedSetupSummary(setup) {
+  console.error("");
+  console.error(
+    `${style("✓", ANSI.green)} Saved ${setup.packages.length} package${setup.packages.length === 1 ? "" : "s"} and ${setup.skills.length} global skill${setup.skills.length === 1 ? "" : "s"}.`,
+  );
 }
 
 async function copyRestoreCommandToClipboard(restoreCommand) {
@@ -732,18 +740,25 @@ async function readSkillName(skillPath, fallback) {
   return nameMatch ? nameMatch[1].trim() : fallback;
 }
 
-function printSkillMetadataWarning(summary) {
-  const notPortableCount = summary.missingMetadataSkills + summary.settingsSkillLocations;
-  if (notPortableCount === 0) {
+function printSkippedSkillSourceNotice(summary) {
+  const skippedCount = summary.missingMetadataSkills + summary.settingsSkillLocations;
+  if (skippedCount === 0) {
     return;
   }
 
+  console.error("");
   console.error(
-    `${style("!", ANSI.yellow)} Note: ${notPortableCount} skill source${notPortableCount === 1 ? "" : "s"} could not be converted to skills installer commands and ${notPortableCount === 1 ? "was" : "were"} not included.`,
+    `${style("!", ANSI.yellow)} Heads up: ${skippedCount} skill${skippedCount === 1 ? "" : "s"} could not be added to the restore command because ${skippedCount === 1 ? "it has" : "they have"} no portable install source.`,
   );
   console.error(
     style(
-      `  Included ${summary.includedSkills} skill${summary.includedSkills === 1 ? "" : "s"} from lock metadata or git remotes. Skills without .agents/.skill-lock.json metadata, a git origin remote, or settings.skills installer metadata are not portable yet.`,
+      "  This does not refer to items you unchecked. These skills were not selectable because pi-my-setup cannot reinstall them on another machine.",
+      ANSI.dim,
+    ),
+  );
+  console.error(
+    style(
+      "  To make a skill portable, install it through the Skills CLI, add a git origin remote, or package it as a Pi package.",
       ANSI.dim,
     ),
   );

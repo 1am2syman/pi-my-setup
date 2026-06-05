@@ -76,6 +76,7 @@ function parseArgs(argv) {
     dryRun: false,
     help: false,
     setupCode: "",
+    force: false,
     version: false,
     yes: false,
   };
@@ -99,6 +100,10 @@ function parseArgs(argv) {
         break;
       case "--dry-run":
         options.dryRun = true;
+        break;
+      case "--force":
+      case "--reinstall":
+        options.force = true;
         break;
       case "--help":
       case "-h":
@@ -141,8 +146,9 @@ Usage:
   npx pi-my-setup decode <code>    Print packages and skills inside a setup code without installing
 
 Options:
-  --yes, -y                        Skip checkbox UI and use every decoded/discovered item
+  --yes, -y                        Skip checkbox UI; restore skips already-installed items unless --force
   --dry-run                        Print restore commands without running them
+  --force, --reinstall             Reinstall already-installed restore items too
   --version, -v                    Print pi-my-setup version
   --help, -h                       Show this help
 `);
@@ -288,7 +294,8 @@ function printDecodedSetupCode(setupCode) {
 
 async function restoreSetupCode(setupCode, options) {
   const setup = decodeSetupCode(setupCode);
-  const items = createRestoreItems(setup);
+  const installedState = options.force ? createEmptyInstalledState() : await readInstalledRestoreState();
+  const items = createRestoreItems(setup, installedState);
 
   if (options.yes || !process.stdin.isTTY || !process.stdout.isTTY) {
     printDecodedSetup(setup);
@@ -298,25 +305,87 @@ async function restoreSetupCode(setupCode, options) {
   await installSetupItems(items, options);
 }
 
-function createRestoreItems(setup) {
+function createEmptyInstalledState() {
+  return {
+    packageIdentities: new Set(),
+    skillNames: new Set(),
+  };
+}
+
+async function readInstalledRestoreState() {
+  const [packageIdentities, skillNames] = await Promise.all([
+    readInstalledPackageIdentities(),
+    readInstalledRestoreSkillNames(),
+  ]);
+  return { packageIdentities, skillNames };
+}
+
+async function readInstalledPackageIdentities() {
+  const settingsPath = path.join(os.homedir(), ".pi", "agent", "settings.json");
+  if (!existsSync(settingsPath)) {
+    return new Set();
+  }
+
+  try {
+    const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+    return new Set(extractSupportedPackageSources(settings.packages ?? []).map(sourceIdentity));
+  } catch {
+    return new Set();
+  }
+}
+
+async function readInstalledRestoreSkillNames() {
+  const names = new Set();
+  const skillSets = await Promise.all([
+    readInstalledSkillNamesSafely(path.join(os.homedir(), ".agents", "skills"), getInstalledSkillNames),
+    readInstalledSkillNamesSafely(path.join(os.homedir(), ".pi", "agent", "skills"), getInstalledPiSkillNames),
+  ]);
+
+  for (const skillSet of skillSets) {
+    for (const skillName of skillSet) {
+      names.add(skillName.toLowerCase());
+    }
+  }
+  return names;
+}
+
+async function readInstalledSkillNamesSafely(root, reader) {
+  try {
+    return await reader(root);
+  } catch {
+    // Installation checks are an optimization; restore should still work if inspection fails.
+    return new Set();
+  }
+}
+
+function createRestoreItems(setup, installedState = createEmptyInstalledState()) {
   return [
-    ...setup.packages.map((source) => ({
-      kind: "package",
-      source,
-      label: source,
-      description: DEFAULT_DESCRIPTIONS.get(source) || "Pi package",
-      selected: true,
-      saveable: true,
-    })),
-    ...setup.skills.map((skill) => ({
-      kind: "skill",
-      source: skill.source,
-      skill: skill.skill,
-      label: `${skill.source}@${skill.skill}`,
-      description: "Agent skill",
-      selected: true,
-      saveable: true,
-    })),
+    ...setup.packages.map((source) => {
+      const description = DEFAULT_DESCRIPTIONS.get(source) || "Pi package";
+      const installed = installedState.packageIdentities.has(sourceIdentity(source));
+      return {
+        kind: "package",
+        source,
+        label: source,
+        description: installed ? `Already installed · ${description}` : description,
+        selected: !installed,
+        installed,
+        saveable: true,
+      };
+    }),
+    ...setup.skills.map((skill) => {
+      const installed = installedState.skillNames.has(skill.skill.toLowerCase());
+      return {
+        kind: "skill",
+        source: skill.source,
+        skill: skill.skill,
+        label: `${skill.source}@${skill.skill}`,
+        description: installed ? "Already installed · Agent skill" : "Agent skill",
+        selected: !installed,
+        installed,
+        saveable: true,
+      };
+    }),
   ];
 }
 
@@ -503,13 +572,19 @@ async function installSetupItems(items, options) {
   }
 
   const selected = result.items.filter((item) => item.selected);
+  const skippedInstalledItems = result.items.filter((item) => item.installed && !item.selected);
   const packages = selected.filter((item) => item.kind === "package");
   const skills = selected.filter((item) => item.kind === "skill");
-  const skillGroups = groupSkillsBySource(skills);
-  const operationCount = packages.length + skillGroups.length;
+  const operationCount = packages.length + skills.length;
+
+  printSkippedInstalledSummary(skippedInstalledItems);
 
   if (operationCount === 0) {
-    console.log("No items selected.");
+    if (skippedInstalledItems.length === result.items.length && result.items.length > 0) {
+      console.log(`${style("✓", ANSI.green)} Everything in this setup is already installed.`);
+    } else {
+      console.log("No items selected for install.");
+    }
     return;
   }
 
@@ -519,6 +594,7 @@ async function installSetupItems(items, options) {
   );
 
   let operationIndex = 1;
+  let failureCount = 0;
   for (const pkg of packages) {
     const commandText = `pi install ${pkg.source}`;
     if (options.dryRun) {
@@ -527,16 +603,20 @@ async function installSetupItems(items, options) {
       continue;
     }
 
-    await runCommandQuiet("pi", ["install", pkg.source], {
+    const result = await runCommandQuiet("pi", ["install", pkg.source], {
       label: `Installing ${pkg.source}`,
       index: operationIndex,
       total: operationCount,
     });
+    if (!result.ok) {
+      failureCount += 1;
+      printInstallFailure(`package ${pkg.source}`, result);
+    }
     operationIndex += 1;
   }
 
-  for (const group of skillGroups) {
-    const args = ["--yes", "skills", "add", group.source, "-g", "--yes", "--full-depth", "--skill", ...group.skills];
+  for (const skill of skills) {
+    const args = ["--yes", "skills", "add", skill.source, "-g", "--yes", "--full-depth", "--skill", skill.skill];
     const commandText = `npx ${args.join(" ")}`;
     if (options.dryRun) {
       console.log(`${style("$", ANSI.dim)} ${commandText}`);
@@ -544,25 +624,39 @@ async function installSetupItems(items, options) {
       continue;
     }
 
-    await runCommandQuiet("npx", args, {
-      label: `Installing ${group.skills.length} skill${group.skills.length === 1 ? "" : "s"} from ${group.source}`,
+    const result = await runCommandQuiet("npx", args, {
+      label: `Installing skill ${skill.skill} from ${skill.source}`,
       index: operationIndex,
       total: operationCount,
     });
+    if (!result.ok) {
+      failureCount += 1;
+      printInstallFailure(`skill ${skill.skill} from ${skill.source}`, result);
+    }
     operationIndex += 1;
   }
 
-  console.log(`${style("✓", ANSI.green)} ${options.dryRun ? "Dry run complete." : "Restore complete."}`);
+  if (options.dryRun) {
+    console.log(`${style("✓", ANSI.green)} Dry run complete.`);
+  } else if (failureCount > 0) {
+    console.log(
+      `${style("!", ANSI.yellow)} Restore finished with ${failureCount} error${failureCount === 1 ? "" : "s"}; all remaining items were attempted.`,
+    );
+  } else {
+    console.log(`${style("✓", ANSI.green)} Restore complete.`);
+  }
 }
 
-function groupSkillsBySource(skills) {
-  const groups = new Map();
-  for (const skill of skills) {
-    const existing = groups.get(skill.source) ?? [];
-    existing.push(skill.skill);
-    groups.set(skill.source, existing);
+function printSkippedInstalledSummary(items) {
+  if (items.length === 0) {
+    return;
   }
-  return [...groups.entries()].map(([source, groupSkills]) => ({ source, skills: groupSkills }));
+
+  const packages = items.filter((item) => item.kind === "package").length;
+  const skills = items.filter((item) => item.kind === "skill").length;
+  console.log(
+    `${style("✓", ANSI.green)} Skipping ${packages} already-installed package${packages === 1 ? "" : "s"} and ${skills} already-installed skill${skills === 1 ? "" : "s"}.`,
+  );
 }
 
 async function readShareableSetup() {
@@ -695,6 +789,39 @@ async function getInstalledSkillNames(root) {
       names.add(entry.name);
     } else if (entry.isFile() && entry.name.endsWith(".md") && entry.name !== "SKILL.md") {
       names.add(path.basename(entry.name, ".md"));
+    }
+  }
+  return names;
+}
+
+async function getInstalledPiSkillNames(root) {
+  const names = new Set();
+  if (!existsSync(root)) {
+    return names;
+  }
+
+  const entries = await readdir(root, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const skillRoot = path.join(root, entry.name);
+    const rootSkillPath = path.join(skillRoot, "SKILL.md");
+    if (existsSync(rootSkillPath)) {
+      names.add(await readSkillName(rootSkillPath, entry.name));
+    }
+
+    const childEntries = await readdir(skillRoot, { withFileTypes: true });
+    for (const childEntry of childEntries) {
+      if (!childEntry.isDirectory()) {
+        continue;
+      }
+
+      const childSkillPath = path.join(skillRoot, childEntry.name, "SKILL.md");
+      if (existsSync(childSkillPath)) {
+        names.add(await readSkillName(childSkillPath, childEntry.name));
+      }
     }
   }
   return names;
@@ -1019,11 +1146,18 @@ function style(text, code) {
 
 function runCommandQuiet(command, args, progress) {
   const prepared = prepareCommand(command, args);
-  const commandText = `${command} ${args.join(" ")}`;
   const output = [];
   const progressLine = startProgress(progress);
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result, success) => {
+      if (settled) return;
+      settled = true;
+      progressLine.stop(success);
+      resolve(result);
+    };
+
     const child = spawn(prepared.command, prepared.args, {
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -1032,25 +1166,61 @@ function runCommandQuiet(command, args, progress) {
     child.stderr.on("data", (chunk) => appendOutput(output, chunk));
 
     child.on("error", (error) => {
-      progressLine.stop(false);
-      reject(error);
+      finish(
+        {
+          ok: false,
+          reason: `the installer could not start: ${toOneLine(error.message)}`,
+        },
+        false,
+      );
     });
 
     child.on("close", (code) => {
       if (code === 0) {
-        progressLine.stop(true);
-        resolve();
+        finish({ ok: true }, true);
         return;
       }
 
-      progressLine.stop(false);
-      const details = output.join("").trim();
-      if (details) {
-        console.error(details);
-      }
-      reject(new Error(`${commandText} failed with exit code ${code}`));
+      finish(
+        {
+          ok: false,
+          reason: getCommandFailureReason(code, output.join("")),
+        },
+        false,
+      );
     });
   });
+}
+
+function printInstallFailure(subject, result) {
+  const reason = result.reason || "the installer reported an unknown error";
+  console.error(`${style("!", ANSI.yellow)} Could not install ${subject} because ${reason}.`);
+}
+
+function getCommandFailureReason(code, output) {
+  const exitDescription =
+    code === null ? "the installer stopped before returning an exit code" : `the installer exited with code ${code}`;
+  const summary = getFirstUsefulOutputLine(output);
+  if (summary) {
+    return `${exitDescription}: ${summary}`;
+  }
+  return exitDescription;
+}
+
+function getFirstUsefulOutputLine(output) {
+  const lines = stripAnsi(output)
+    .split(/\r?\n/)
+    .map((line) => toOneLine(line.trim()))
+    .filter(Boolean);
+  return lines[0] || "";
+}
+
+function stripAnsi(text) {
+  return text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+function toOneLine(text) {
+  return String(text).replace(/\s+/g, " ").trim();
 }
 
 function appendOutput(output, chunk) {

@@ -133,8 +133,9 @@ pi-my-setup -v
 Options:
 
 ```bash
---yes, -y      Skip checkbox UI and use every decoded/discovered item
+--yes, -y      Skip checkbox UI; restore skips already-installed items unless --force
 --dry-run      Print restore commands without running them
+--force        Reinstall already-installed restore items too
 --version, -v  Print pi-my-setup version
 --help, -h     Show help
 ```
@@ -166,15 +167,23 @@ The two `--yes` flags are different:
 When you run a restore command, `pi-my-setup`:
 
 1. Decodes the setup code.
-2. Shows the package and skill list.
-3. Lets you select what to install.
-4. Runs `pi install <source>` for selected Pi packages.
-5. Runs grouped `npx --yes skills add ...` commands for selected skills.
+2. Checks which packages and skills are already installed.
+3. Shows the package and skill list, with already-installed items unchecked.
+4. Lets you select what to install.
+5. Runs `pi install <source>` for each selected Pi package.
+6. Runs `npx --yes skills add ...` for each selected skill.
+7. If one package or skill fails, prints a one-line error for that item and continues with the rest.
 
-Use `--yes` to skip selection and install everything:
+Use `--yes` to skip selection and install every item that is not already installed:
 
 ```bash
 npx pi-my-setup restore pisetup:v2:eNqV... --yes
+```
+
+Use `--force` when you intentionally want to reinstall already-installed restore items:
+
+```bash
+npx pi-my-setup restore pisetup:v2:eNqV... --yes --force
 ```
 
 Use `--dry-run` to preview commands without installing:

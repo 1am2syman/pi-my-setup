@@ -1,76 +1,153 @@
 # pi-my-setup
 
-Save your Pi package setup as one copy-paste restore command. No git clone, no manifest file, no repo checkout.
+Save and restore your Pi packages and portable skills with one copy-paste command.
 
-## Move your Pi setup to another machine
+## The 10-second version
 
-On the machine that already has your Pi packages configured:
+On the machine that already has your Pi setup:
 
 ```bash
-npx pi-my-setup
+npx --yes pi-my-setup@latest save
 ```
 
-or explicitly:
+That command:
+
+1. Reads your shareable Pi packages and portable skills.
+2. Prints one restore command.
+3. Copies that restore command to your clipboard when clipboard access is available.
+
+On the new machine, paste the copied command and run it.
+
+It will look like this:
 
 ```bash
-npx pi-my-setup save
+npx pi-my-setup restore pisetup:v2:eNqV...
 ```
 
-Copy the printed command into any notes app. It looks like this:
+## Recommended usage
+
+Use `npx` if you only need the tool occasionally:
 
 ```bash
-npx pi-my-setup restore pisetup:v1:eNqV...
+npx --yes pi-my-setup@latest save
 ```
 
-On a fresh machine, paste and run that command. `pi-my-setup` decodes the setup code, shows the package list, opens the checkbox installer, and runs `pi install <source>` for selected packages.
-
-Setup codes include only shareable Pi package sources from `~/.pi/agent/settings.json`. They do not include secrets, npm tokens, API keys, local paths, manifest files, or machine-specific files.
-
-## What gets restored
-
-`pi-my-setup` does **not** carry over your full Pi settings. It only saves and restores shareable Pi package entries — the npm/git packages that Pi can install, typically packages that provide extensions, skills, tools, or providers.
-
-It does not copy:
-
-- Pi settings/preferences
-- model/provider API keys
-- auth tokens or npm credentials
-- local-only skills or extensions
-- local file paths
-- machine-specific config
-
-Packaged skills are restored when they come from a saved npm/git Pi package. Standalone local skill folders are detected during `save` and reported as a warning, but they are not included in the setup code.
-
-If a skill or extension is only present as a local file on one machine, package it as an npm/git Pi package before expecting `pi-my-setup` to restore it elsewhere.
-
-## Optional global install
-
-You can also install the tool globally if you do not want to type `npx` each time:
+Use a global install if you want a permanent `pi-my-setup` command:
 
 ```bash
-npm install -g pi-my-setup
+npm install -g pi-my-setup@latest
 pi-my-setup save
 ```
 
-Then restore on another machine with the printed command:
+Check the installed global version:
 
 ```bash
-pi-my-setup restore pisetup:v1:eNqV...
+pi-my-setup --version
+# or
+pi-my-setup -v
 ```
+
+## Important: local install vs global install
+
+This does **not** update the `pi-my-setup` command on your PATH:
+
+```bash
+npm install pi-my-setup
+```
+
+That installs the package into the current project only.
+
+If `pi-my-setup --version` still shows an old version, update the global install:
+
+```bash
+npm install -g pi-my-setup@latest
+```
+
+Or bypass global installs entirely:
+
+```bash
+npx --yes pi-my-setup@latest --version
+npx --yes pi-my-setup@latest save
+```
+
+## What gets saved
+
+`pi-my-setup save` includes only portable, reinstallable sources:
+
+- Pi packages from `~/.pi/agent/settings.json` with npm/git/URL sources
+- global skills with installer metadata in `~/.agents/.skill-lock.json`
+- git-backed skill repos under `~/.pi/agent/skills` that have an `origin` remote
+
+## What does not get saved
+
+It never saves machine-specific or secret data:
+
+- API keys
+- auth tokens
+- npm credentials
+- Pi preferences/settings unrelated to package installation
+- local-only skills with no installer metadata
+- local file paths
+- machine-specific config
+
+If a skill is just a local folder, `pi-my-setup` cannot recreate it on another machine. Install that skill through the Skills CLI, put it in a git repo with an `origin` remote, or package it as a Pi package first.
+
+## Skill warning explained
+
+During `save`, you may see something like:
+
+```text
+! Note: 1 skill source could not be converted to skills installer commands and was not included.
+```
+
+That means at least one skill exists locally but has no portable install source. The restore command still works; it just will not include that local-only skill.
 
 ## Commands
 
 ```bash
-npx pi-my-setup                         # print one restore command from ~/.pi/agent/settings.json
-npx pi-my-setup save                    # same as default
-npx pi-my-setup restore <setup-code>    # decode and install selected packages
-npx pi-my-setup decode <setup-code>     # print packages without installing
+npx --yes pi-my-setup@latest save          # print and copy one restore command
+npx --yes pi-my-setup@latest restore CODE  # install packages and skills from a setup code
+npx --yes pi-my-setup@latest decode CODE   # show what is inside a setup code
+npx --yes pi-my-setup@latest --version     # show latest package version
+```
+
+With a global install:
+
+```bash
+pi-my-setup save
+pi-my-setup restore CODE
+pi-my-setup decode CODE
+pi-my-setup --version
+pi-my-setup -v
 ```
 
 Options:
 
 ```bash
---yes, -y      # skip checkbox UI and install every decoded package
---dry-run      # print pi install commands without running them
---help, -h     # show help
+--yes, -y      Skip checkbox UI during restore and install every decoded item
+--dry-run      Print restore commands without running them
+--version, -v  Print pi-my-setup version
+--help, -h     Show help
+```
+
+## Restore flow
+
+When you run a restore command, `pi-my-setup`:
+
+1. Decodes the setup code.
+2. Shows the package and skill list.
+3. Lets you select what to install.
+4. Runs `pi install <source>` for selected Pi packages.
+5. Runs grouped `npx --yes skills add ...` commands for selected skills.
+
+Use `--yes` to skip selection and install everything:
+
+```bash
+npx pi-my-setup restore pisetup:v2:eNqV... --yes
+```
+
+Use `--dry-run` to preview commands without installing:
+
+```bash
+npx pi-my-setup restore pisetup:v2:eNqV... --dry-run
 ```

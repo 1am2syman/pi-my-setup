@@ -1,7 +1,7 @@
 {
   "name": "pi-my-setup",
-  "version": "0.3.3",
-  "description": "Save and restore Pi package setups with one command.",
+  "version": "0.4.5",
+  "description": "Save and restore Pi package and skill setups with one command.",
   "type": "module",
   "bin": {
     "pi-my-setup": "bin/pi-my-setup.js"
